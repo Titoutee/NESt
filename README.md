@@ -1,8 +1,8 @@
-# nest
+# NESt
 
 ## Motivation and first stones
 
-***nest***, standing for *NES in Rust*, is my introduction of *NES* platform emulation, based on [bugzmanov's guide](https://bugzmanov.github.io/nes_ebook/chapter_2.html) on "How to build a NES emulator", but with my own Rust taste (more or less, I'm an emulation toddler lol).
+***NESt***, standing for *NES in Rust*, is my introduction of *NES* platform emulation, based on [bugzmanov's guide](https://bugzmanov.github.io/nes_ebook/chapter_2.html) on "How to build a NES emulator", but with my own Rust taste (more or less, I'm an emulation toddler lol).
 
 This project serves my selfish thirst for learning more about **retro gaming platforms**, and *NES* is one good candidate when it comes to emulating OS-less platforms, running machine language-coded ROMs on bare hardware.
 
