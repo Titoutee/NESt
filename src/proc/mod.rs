@@ -1,7 +1,13 @@
 //! NESt processing
 
 pub mod addressing;
+pub mod op;
+use std::collections::HashMap;
+
 use addressing::AddressingMode;
+use op::CPU_OP_CODES;
+
+use crate::proc::op::OpCode;
 
 /// Follows the cycle Fetch-Decode-Execute:
 ///
@@ -99,7 +105,10 @@ impl CPU {
         }
     }
 
-    fn lda(&mut self, value: u8) {
+    fn lda(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+
         self.register_a = value;
         self.set_flags_zero_neg(self.register_a);
     }
@@ -110,33 +119,44 @@ impl CPU {
     }
 
     fn inx(&mut self) {
-        if self.register_x >= 0xff {
-            self.register_x = 0;
-        } else {
-            self.register_x += 1;
-        }
-
+        self.register_x = (self.register_x).wrapping_add(1);
         self.set_flags_zero_neg(self.register_x);
     }
 
+    fn sta(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        self.mem_write(addr, self.register_a);
+    }
+
     pub fn run(&mut self) {
+        let ref opcodes: HashMap<u8, &'static OpCode> = *op::OPCODES_MAP;
+
         loop {
-            let opcode = self.mem_read(self.pc);
+            let code = self.mem_read(self.pc);
             self.pc += 1;
+            let program_counter_state = self.pc;
 
-            match opcode {
-                0xA9 => {
-                    // LDA
-                    let param = self.mem_read(self.pc);
-                    self.pc += 1;
+            let opcode = opcodes
+                .get(&code)
+                .expect(&format!("Opcode {:x} is not recognized", code));
 
-                    self.lda(param);
+            match code {
+                // LDA
+                0xa9 | 0xa5 | 0xb5 | 0xad | 0xbd | 0xb9 | 0xa1 | 0xb1 => {
+                    self.lda(&opcode.mode);
                 }
-                0xAA => self.tax(), // TAX
-                0xE8 => self.inx(),
-
+                // STA
+                0x85 | 0x95 | 0x8d | 0x9d | 0x99 | 0x81 | 0x91 => {
+                    self.sta(&opcode.mode);
+                }
+                0xaa => self.tax(), // TAX
+                0xe8 => self.inx(),
                 0x00 => return, // BRK
                 _ => todo!(),
+            }
+
+            if program_counter_state == self.pc {
+                self.pc += (opcode.pc_incr - 1) as u16;
             }
         }
     }
@@ -166,12 +186,26 @@ impl CPU {
                 let addr = base.wrapping_add(self.register_y as u16) as u16;
                 addr
             }
+            AddressingMode::IndirectX => {
+                let base = self.mem_read(self.pc); // Base address as zero page addressing
 
+                let ptr: u8 = (base as u8).wrapping_add(self.register_x);
+                let lo = self.mem_read(ptr as u16);
+                let hi = self.mem_read(ptr.wrapping_add(1) as u16);
+                (hi as u16) << 8 | (lo as u16)
+            }
+            AddressingMode::IndirectY => {
+                let base = self.mem_read(self.pc); // Base address as zero page addressing
+
+                let lo = self.mem_read(base as u16);
+                let hi = self.mem_read((base as u8).wrapping_add(1) as u16);
+                let base_deref = (hi as u16) << 8 | lo as u16;
+                let deref = base_deref.wrapping_add(self.register_y as u16);
+                deref
+            }
             AddressingMode::NoneAddressing => {
                 panic!("mode {:?} is not supported", mode);
             }
-
-            _ => todo!(),
         }
     }
 }
@@ -240,6 +274,15 @@ mod tests {
         cpu.load(vec![0xe8, 0xe8, 0x00]);
         cpu.run(); // INX; INX; Brk
         assert_eq!(cpu.register_x, 1);
+    }
+
+    #[test]
+    fn test_lda_from_memory() {
+        let mut cpu = CPU::new();
+        cpu.mem_write(0x10, 0x55); // manual mem write
+        cpu.load_and_run(vec![0xa5, 0x10, 0x00]);
+
+        assert_eq!(cpu.register_a, 0x55);
     }
     // Other flags are unaffected
 }
