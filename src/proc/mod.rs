@@ -106,13 +106,13 @@ impl CPU {
         }
     }
 
-    fn load(&mut self, program: Vec<u8>) {
-        self.mem[0x8000..(0x8000 + program.len())].copy_from_slice(&program[..]);
-        self.mem_write_u16(0xFFFC, 0x8000);
+    pub fn load(&mut self, program: Vec<u8>) {
+        self.mem[0x0600..(0x0600 + program.len())].copy_from_slice(&program[..]); // Tests will fail with 0x0600, for sure...
+        self.mem_write_u16(0xFFFC, 0x0600);
     }
 
     // As when the cartridge is physically inserted
-    fn load_and_run(&mut self, program: Vec<u8>) {
+    pub fn load_and_run(&mut self, program: Vec<u8>) {
         self.load(program);
         self.reset();
         self.run();
@@ -147,6 +147,10 @@ impl CPU {
         self.status.remove(StatusFlags::DECIMAL_MODE)
     }
 
+    fn set_interrupt_disable_flag(&mut self) {
+        self.status.insert(StatusFlags::INTERRUPT_DISABLE)
+    }
+
     fn clear_interrupt_disable_flag(&mut self) {
         self.status.remove(StatusFlags::INTERRUPT_DISABLE)
     }
@@ -157,6 +161,10 @@ impl CPU {
 
     fn clear_zero_flag(&mut self) {
         self.status.remove(StatusFlags::ZERO)
+    }
+
+    fn set_decimal_flag(&mut self) {
+        self.status.insert(StatusFlags::DECIMAL_MODE);
     }
 
     // Add to register_a, in respect to the carry and overflow bits
@@ -214,6 +222,30 @@ impl CPU {
         }
     }
 
+    fn stack_push(&mut self, data: u8) {
+        self.mem_write((STACK as u16) + self.sp as u16, data);
+        self.sp = self.sp.wrapping_sub(1);
+    }
+
+    fn stack_pop(&mut self) -> u8 {
+        self.sp = self.sp.wrapping_add(1);
+        self.mem_read((STACK as u16) + self.sp as u16)
+    }
+
+    fn stack_push_u16(&mut self, data: u16) {
+        let hi = (data >> 8) as u8;
+        let lo = (data & 0xff) as u8;
+        self.stack_push(hi);
+        self.stack_push(lo);
+    }
+
+    fn stack_pop_u16(&mut self) -> u16 {
+        let lo = self.stack_pop() as u16;
+        let hi = self.stack_pop() as u16;
+
+        hi << 8 | lo
+    }
+
     fn lda(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         let value = self.mem_read(addr);
@@ -227,6 +259,31 @@ impl CPU {
         self.set_flags_zero_neg(self.register_x);
     }
 
+    fn tay(&mut self) {
+        self.register_y = self.register_a;
+        self.set_flags_zero_neg(self.register_y);
+    }
+
+    fn tsx(&mut self) {
+        self.register_x = self.sp;
+        self.set_flags_zero_neg(self.register_x);
+    }
+
+    fn txs(&mut self) {
+        self.sp = self.register_x;
+        self.set_flags_zero_neg(self.sp);
+    }
+
+    // fn tsy(&mut self) {
+    //     self.register_y = self.sp;
+    //     self.set_flags_zero_neg(self.register_y);
+    // }
+
+    fn reverse_transfer_accumulator(&mut self, reg: u8) {
+        self.register_a = reg;
+        self.set_flags_zero_neg(self.register_a);
+    }
+
     fn inx(&mut self) {
         self.register_x = (self.register_x).wrapping_add(1);
         self.set_flags_zero_neg(self.register_x);
@@ -237,9 +294,9 @@ impl CPU {
         self.set_flags_zero_neg(self.register_y);
     }
 
-    fn sta(&mut self, mode: &AddressingMode) {
+    fn store(&mut self, mode: &AddressingMode, reg: u8) {
         let addr = self.get_operand_address(mode);
-        self.mem_write(addr, self.register_a);
+        self.mem_write(addr, reg);
     }
 
     fn adc(&mut self, mode: &AddressingMode) {
@@ -359,7 +416,150 @@ impl CPU {
         self.set_register_a(data ^ self.register_a);
     }
 
+    fn jsr(&mut self, _mode: &AddressingMode) {
+        let target_addr = self.mem_read_u16(self.pc);
+
+        self.stack_push(self.sp + 2 - 1); // +2 for the 2-byte skip
+        self.pc = target_addr;
+    }
+
+    fn ldx(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+
+        self.register_x = value;
+        self.set_flags_zero_neg(self.register_x);
+    }
+
+    fn ldy(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let value = self.mem_read(addr);
+
+        self.register_y = value;
+        self.set_flags_zero_neg(self.register_y);
+    }
+
+    fn lsr(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let mut data = self.mem_read(addr);
+
+        if data & 0b1 == 0b1 {
+            self.set_carry_flag();
+        } else {
+            self.clear_carry_flag();
+        }
+        data = data >> 1;
+        self.mem_write(addr, data);
+        self.set_flags_zero_neg(data);
+    }
+
+    fn lsr_accumulator(&mut self) {
+        let mut data = self.register_a;
+        if data & 1 == 1 {
+            self.set_carry_flag();
+        } else {
+            self.clear_carry_flag();
+        }
+        data = data >> 1;
+        self.set_register_a(data)
+    }
+
+    fn ora(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let data = self.mem_read(addr);
+
+        self.set_register_a(data | self.register_a);
+    }
+
+    fn rol_accumulator(&mut self) {
+        let mut data = self.register_a;
+        let old_carry = self.status.contains(StatusFlags::CARRY);
+
+        if data >> 7 == 0b1 {
+            self.set_carry_flag();
+        } else {
+            self.clear_carry_flag();
+        }
+
+        data = data << 1;
+        if old_carry {
+            data = data | 0b1;
+        }
+
+        self.set_register_a(data);
+    }
+
+    fn rol(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let mut data = self.mem_read(addr);
+        let old_carry = self.status.contains(StatusFlags::CARRY);
+
+        if data >> 7 == 0b1 {
+            self.set_carry_flag();
+        } else {
+            self.clear_carry_flag();
+        }
+
+        data = data << 1;
+        if old_carry {
+            data = data | 0b1;
+        }
+
+        self.mem_write(addr, data);
+    }
+
+    fn ror_accumulator(&mut self) {
+        let mut data = self.register_a;
+        let old_carry = self.status.contains(StatusFlags::CARRY);
+
+        if data & 0b1 == 0b1 {
+            self.set_carry_flag();
+        } else {
+            self.clear_carry_flag();
+        }
+
+        data = data << 1;
+        if old_carry {
+            data = data | 0b1000_0000;
+        }
+
+        self.set_register_a(data);
+    }
+
+    fn ror(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let mut data = self.mem_read(addr);
+        let old_carry = self.status.contains(StatusFlags::CARRY);
+
+        if data & 0b1 == 0b1 {
+            self.set_carry_flag();
+        } else {
+            self.clear_carry_flag();
+        }
+
+        data = data << 1;
+        if old_carry {
+            data = data | 0b1000_0000;
+        }
+
+        self.set_register_a(data);
+    }
+
+    fn rti(&mut self, _mode: &AddressingMode) {
+        self.status.0 = self.stack_pop().into();
+        self.status.remove(StatusFlags::BREAK_COMMAND);
+
+        self.pc = self.stack_pop_u16();
+    }
+
+    fn rts(&mut self, _mode: &AddressingMode) {
+        self.pc = self.stack_pop_u16() + 1;
+    }
+
     pub fn run(&mut self) {
+        self.run_with_callback(|_| {});
+    }
+    pub fn run_with_callback<F: FnMut(&mut CPU)>(&mut self, mut callback: F) {
         let ref opcodes: HashMap<u8, &'static OpCode> = *op::OPCODES_MAP;
 
         loop {
@@ -370,7 +570,7 @@ impl CPU {
             let opcode = opcodes
                 .get(&code)
                 .expect(&format!("Opcode {:x} is not recognized", code));
-
+            println!("{:#?}", opcode);
             match code {
                 // ADC
                 0x69 | 0x65 | 0x75 | 0x6D | 0x7D | 0x79 | 0x61 | 0x71 => {
@@ -382,7 +582,7 @@ impl CPU {
                 }
                 // STA
                 0x85 | 0x95 | 0x8d | 0x9d | 0x99 | 0x81 | 0x91 => {
-                    self.sta(&opcode.mode);
+                    self.store(&opcode.mode, self.register_a);
                 }
                 // SBC
                 0xe9 | 0xe5 | 0xf5 | 0xed | 0xfd | 0xf9 | 0xe1 | 0xf1 => {
@@ -479,14 +679,77 @@ impl CPU {
 
                     self.pc = indirect_ref
                 }
-                0xaa => self.tax(), // TAX
-                0x00 => return,     // BRK
+                // JSR
+                0x20 => self.jsr(&opcode.mode),
+                // LDX
+                0xa2 | 0xa6 | 0xb6 | 0xae | 0xbe => self.ldx(&opcode.mode),
+                // LDY
+                0xa0 | 0xa4 | 0xb4 | 0xac | 0xbc => self.ldy(&opcode.mode),
+                // LSR (accumulator)
+                0x4a => self.lsr_accumulator(),
+                // LSR
+                0x46 | 0x56 | 0x4e | 0x5e => self.lsr(&opcode.mode),
+                // NOP
+                0xea => {} // Do absolutely nothing
+                // ORA
+                0x09 | 0x05 | 0x15 | 0x0d | 0x1d | 0x19 | 0x01 | 0x11 => self.ora(&opcode.mode),
+                // PHA
+                0x48 => self.stack_push(self.register_a),
+                // PHP
+                0x08 => self.stack_push(self.status.bits()),
+                // PLA
+                0x68 => {
+                    let pulled = self.stack_pop();
+                    self.set_register_a(pulled);
+                }
+                // PLP
+                0x28 => {
+                    let pulled = self.stack_pop();
+                    self.status.0 = pulled.into();
+                    self.status.remove(StatusFlags::BREAK_COMMAND);
+                }
+                // ROL (accumulator)
+                0x2a => self.rol_accumulator(),
+                // ROL
+                0x26 | 0x36 | 0x2e | 0x3e => self.rol(&opcode.mode),
+                // ROR (accumulator)
+                0x6a => self.ror_accumulator(),
+                // ROR
+                0x66 | 0x76 | 0x6e | 0x7e => self.ror(&opcode.mode),
+                // RTI
+                0x40 => self.rti(&opcode.mode),
+                // RTS
+                0x60 => self.rts(&opcode.mode),
+                // SEC
+                0x38 => self.set_carry_flag(),
+                // SED
+                0xf8 => self.set_decimal_flag(),
+                // SEI
+                0x78 => self.set_interrupt_disable_flag(),
+                // STX
+                0x86 | 0x96 | 0x8e => self.store(&opcode.mode, self.register_x),
+                // STY
+                0x84 | 0x94 | 0x8c => self.store(&opcode.mode, self.register_y),
+                // TAX
+                0xaa => self.tax(),
+                // TAY
+                0xa8 => self.tay(),
+                // TSX
+                0xBA => self.tsx(),
+                // TXA
+                0x8a => self.reverse_transfer_accumulator(self.register_x),
+                // TXS
+                0x9a => self.txs(),
+                // TYA
+                0x98 => self.reverse_transfer_accumulator(self.register_y),
+                0x00 => return, // BRK
                 _ => todo!(),
             }
 
             if program_counter_state == self.pc {
                 self.pc += (opcode.pc_incr - 1) as u16;
             }
+            callback(self);
         }
     }
 
@@ -779,5 +1042,15 @@ mod tests {
         assert!(cpu.status.contains(StatusFlags::ZERO));
         assert!(!cpu.status.contains(StatusFlags::CARRY));
         assert!(!cpu.status.contains(StatusFlags::OVERFLOW));
+    }
+
+    #[test]
+    fn test_stack_push_pop() {
+        let mut cpu = CPU::new();
+
+        cpu.stack_push(1);
+        let a = cpu.stack_pop();
+
+        assert!(a == 1);
     }
 }
