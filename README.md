@@ -86,3 +86,6 @@ A full list of 6502 chip official instructions can be found [here](http://www.65
 
 The NES CPU uses various addressing modes, which are documented [here](https://skilldrick.github.io/easy6502/) for more information. This website can also serve as a training zone for anyone wanting to master the 6502 ISA.
 
+## 6502 JMP Indirect Bug
+
+You may notice that the original NES 6502 chip bug when operating a `JMP` with **indirect addressing** is reproduced with fidelity as part of the emulator. This is for *compatibility* and *authenticity* concerns only.

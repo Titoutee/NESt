@@ -143,6 +143,22 @@ impl CPU {
         self.status.remove(StatusFlags::OVERFLOW)
     }
 
+    fn clear_decimal_mode_flag(&mut self) {
+        self.status.remove(StatusFlags::DECIMAL_MODE)
+    }
+
+    fn clear_interrupt_disable_flag(&mut self) {
+        self.status.remove(StatusFlags::INTERRUPT_DISABLE)
+    }
+
+    fn set_zero_flag(&mut self) {
+        self.status.insert(StatusFlags::ZERO)
+    }
+
+    fn clear_zero_flag(&mut self) {
+        self.status.remove(StatusFlags::ZERO)
+    }
+
     // Add to register_a, in respect to the carry and overflow bits
     // From the 6502 documentation on the overflow bit,
     // "Overflow can be computed simply in C++ from the inputs and the result. Overflow occurs if (M^result)&(N^result)&0x80 is nonzero.""
@@ -280,6 +296,69 @@ impl CPU {
         }
     }
 
+    fn bit(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let data = self.mem_read(addr);
+        let and = self.register_a & data;
+
+        if and == 0 {
+            self.status.insert(StatusFlags::ZERO);
+        } else {
+            self.status.remove(StatusFlags::ZERO);
+        }
+
+        self.status
+            .set(StatusFlags::NEGATIVE, data & 0b1000_0000 != 0);
+        self.status
+            .set(StatusFlags::OVERFLOW, data & 0b0100_0000 != 0);
+    }
+
+    fn cmp(&mut self, mode: &AddressingMode, reg: u8) {
+        let addr = self.get_operand_address(mode);
+        let data = self.mem_read(addr);
+        if data <= reg {
+            self.set_carry_flag();
+        } else {
+            self.clear_carry_flag();
+        }
+
+        self.set_flags_zero_neg(reg.wrapping_sub(data));
+    }
+
+    fn inc(&mut self, mode: &AddressingMode) -> u8 {
+        let addr = self.get_operand_address(mode);
+        let mut data = self.mem_read(addr);
+        data = data.wrapping_add(1);
+        self.mem_write(addr, data);
+        self.set_flags_zero_neg(data);
+        data
+    }
+
+    fn dec(&mut self, mode: &AddressingMode) -> u8 {
+        let addr = self.get_operand_address(mode);
+        let mut data = self.mem_read(addr);
+        data = data.wrapping_sub(1);
+        self.mem_write(addr, data);
+        self.set_flags_zero_neg(data);
+        data
+    }
+
+    fn dex(&mut self) {
+        self.register_x = self.register_x.wrapping_sub(1);
+        self.set_flags_zero_neg(self.register_x);
+    }
+
+    fn dey(&mut self) {
+        self.register_y = self.register_y.wrapping_sub(1);
+        self.set_flags_zero_neg(self.register_y);
+    }
+
+    fn eor(&mut self, mode: &AddressingMode) {
+        let addr = self.get_operand_address(mode);
+        let data = self.mem_read(addr);
+        self.set_register_a(data ^ self.register_a);
+    }
+
     pub fn run(&mut self) {
         let ref opcodes: HashMap<u8, &'static OpCode> = *op::OPCODES_MAP;
 
@@ -321,9 +400,87 @@ impl CPU {
                 }
                 // BCC
                 0x90 => self.branch(!self.status.contains(StatusFlags::CARRY), &opcode.mode),
-                0xaa => self.tax(), // TAX
+                // BCS
+                0xB0 => self.branch(self.status.contains(StatusFlags::CARRY), &opcode.mode),
+                // BEQ
+                0xF0 => self.branch(self.status.contains(StatusFlags::ZERO), &opcode.mode),
+                // BIT
+                0x24 | 0x2c => self.bit(&opcode.mode),
+                // BMI
+                0x30 => self.branch(self.status.contains(StatusFlags::NEGATIVE), &opcode.mode),
+                // BNE
+                0xD0 => self.branch(!self.status.contains(StatusFlags::ZERO), &opcode.mode),
+                // BPL
+                0x10 => self.branch(!self.status.contains(StatusFlags::NEGATIVE), &opcode.mode),
+                // BVC
+                0x50 => self.branch(!self.status.contains(StatusFlags::OVERFLOW), &opcode.mode),
+                // BVS
+                0x70 => self.branch(self.status.contains(StatusFlags::OVERFLOW), &opcode.mode),
+                // CLC
+                0x18 => self.clear_carry_flag(),
+                // CLD
+                0xD8 => self.clear_decimal_mode_flag(),
+                // CLI
+                0x58 => self.clear_interrupt_disable_flag(),
+                // CLV
+                0xB8 => self.clear_overflow_flag(),
+                // CMP
+                0xc9 | 0xc5 | 0xd5 | 0xcd | 0xdd | 0xd9 | 0xc1 | 0xd1 => {
+                    self.cmp(&opcode.mode, self.register_a);
+                }
+                // CPX
+                0xe0 | 0xe4 | 0xec => {
+                    self.cmp(&opcode.mode, self.register_x);
+                }
+                // CPY
+                0xc0 | 0xc4 | 0xcc => {
+                    self.cmp(&opcode.mode, self.register_y);
+                }
+                // DEC
+                0xc6 | 0xd6 | 0xce | 0xde => {
+                    self.dec(&opcode.mode);
+                }
+                // DEX
+                0xCA => self.dex(),
+                // DEY
+                0x88 => self.dey(),
+                // EOR
+                0x49 | 0x45 | 0x55 | 0x4d | 0x5d | 0x59 | 0x41 | 0x51 => {
+                    self.eor(&opcode.mode);
+                }
+                // INC
+                0xe6 | 0xf6 | 0xee | 0xfe => {
+                    self.inc(&opcode.mode);
+                }
+                // INX
                 0xe8 => self.inx(),
-                0x00 => return, // BRK
+                // INY
+                0xc8 => self.iny(),
+                // JMP Absolute
+                0x4c => {
+                    let mem_addr = self.mem_read_u16(self.pc);
+                    self.pc = mem_addr;
+                }
+                // JMP Indirect
+                0x6c => {
+                    let mem_addr = self.mem_read_u16(self.pc);
+
+                    let indirect_ref = if mem_addr & 0x00FF == 0x00FF {
+                        // This part here reproduces a bug when jumping through indirect addressing when the second byte of the mem address (mem_addr) is 0xFF
+                        // It is kept here for compatibility concerns
+                        // For more info, see: https://6502.org/tutorials/6502opcodes.html#JMP
+
+                        let lo = self.mem_read(mem_addr);
+                        let hi = self.mem_read(mem_addr & 0xFF00);
+                        (hi as u16) << 8 | (lo as u16)
+                    } else {
+                        self.mem_read_u16(mem_addr)
+                    };
+
+                    self.pc = indirect_ref
+                }
+                0xaa => self.tax(), // TAX
+                0x00 => return,     // BRK
                 _ => todo!(),
             }
 
@@ -607,5 +764,20 @@ mod tests {
         cpu.run();
 
         assert_eq!(cpu.mem_read(0x1), 0x6);
+    }
+
+    #[test]
+    fn test_0x24_bit() {
+        let mut cpu = CPU::new();
+
+        cpu.load(vec![0x24, 0x1, 0x00]);
+        cpu.mem_write(0x1, 0x3);
+        cpu.register_a = 0b1000_0000;
+        cpu.pc = 0x8000;
+        cpu.run();
+
+        assert!(cpu.status.contains(StatusFlags::ZERO));
+        assert!(!cpu.status.contains(StatusFlags::CARRY));
+        assert!(!cpu.status.contains(StatusFlags::OVERFLOW));
     }
 }
