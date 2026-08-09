@@ -48,6 +48,13 @@ The CPU emulated follows the following hardware construction (memmap and registe
 
 ![CPU memmap and register](cpu_registers_memory.png)
 
+### Buses
+
+The NES components are wire together for internal communication using **3** buses:
+
+- *address* bus carries the address of a required location
+- *control* bus notifies if it's a read or write access
+- *data* bus carries the byte of data being read or written
 ### Memory
 
 #### RAM

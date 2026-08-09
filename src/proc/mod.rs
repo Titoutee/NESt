@@ -1,9 +1,10 @@
 //! NESt processing
 
 pub mod addressing;
+mod bus;
 pub mod op;
 
-use crate::proc::op::OpCode;
+use crate::proc::{bus::Bus, op::OpCode};
 use addressing::AddressingMode;
 use bitflags::bitflags;
 use std::collections::HashMap;
@@ -59,7 +60,7 @@ pub struct CPU {
     pub status: StatusFlags, // Flag bitset
     pub pc: u16,
     pub sp: u8,
-    mem: [u8; 0xFFFF], // Private forcing internal mem operating // 64 KiB address space
+    bus: Bus,
 }
 
 pub trait Mem {
@@ -70,7 +71,7 @@ pub trait Mem {
     fn mem_read_u16(&self, addr: u16) -> u16 {
         let lo = self.mem_read(addr) as u16;
         let hi = self.mem_read(addr + 1) as u16;
-        (hi << 8) | lo
+        (hi << 8) | lo as u16
     }
 
     fn mem_write_u16(&mut self, addr: u16, v: u16) {
@@ -83,18 +84,26 @@ pub trait Mem {
 
 impl Mem for CPU {
     fn mem_read(&self, addr: u16) -> u8 {
-        self.mem[addr as usize]
+        self.bus.mem_read(addr)
     }
 
     fn mem_write(&mut self, addr: u16, v: u8) {
-        self.mem[addr as usize] = v;
+        self.bus.mem_write(addr, v);
+    }
+
+    fn mem_read_u16(&self, addr: u16) -> u16 {
+        self.bus.mem_read_u16(addr)
+    }
+
+    fn mem_write_u16(&mut self, addr: u16, v: u16) {
+        self.bus.mem_write_u16(addr, v);
     }
 }
 
 impl CPU {
     pub fn new() -> Self {
         // Init state uses all NULL values
-        // WARNING: 0 as default PC value does not [zcorrespond to what NES considers the base PC when the machine initializes
+        // WARNING: 0 as default PC value does not correspond to what NES considers the base PC when the machine initializes
         // Please refer to the docs given in README for more info
         CPU {
             register_a: 0,
@@ -103,13 +112,19 @@ impl CPU {
             status: StatusFlags::from_bits_truncate(0b100100),
             pc: 0,
             sp: STACK_RESET,
-            mem: [0; 0xFFFF],
+            bus: Bus::new(),
         }
     }
 
     pub fn load(&mut self, program: Vec<u8>) {
-        self.mem[0x0600..(0x0600 + program.len())].copy_from_slice(&program[..]); // Tests will fail with 0x0600, for sure...
-        self.mem_write_u16(0xFFFC, 0x0600);
+        // self.mem[0x0600..(0x0600 + program.len())].copy_from_slice(&program[..]); // Tests will fail with 0x0600, for sure...
+        for i in 0..(program.len() as u16) {
+            self.mem_write(0x0000 + i, program[i as usize]);
+        }
+
+        //self.mem_write_u16(0xFFFC, 0x0600);
+        self.mem_write_u16(0xFFFC, 0x0000);
+        // println!("{:x}", self.mem_read_u16(0xFFFC));
     }
 
     // As when the cartridge is physically inserted
@@ -292,15 +307,19 @@ impl CPU {
     }
 
     fn adc(&mut self, mode: &AddressingMode) {
+        println!("{:x}", self.pc);
+        println!("{:x}", self.mem_read(self.pc));
         let addr = self.get_operand_address(mode);
+        println!("{:x}", addr);
         let data = self.mem_read(addr);
+        println!("{:x}", data);
         self.add_to_reg_a(data);
     }
 
     fn sbc(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         let data = self.mem_read(addr);
-        self.add_to_reg_a((data as i8).wrapping_neg().wrapping_sub(1) as u8);
+        self.add_to_reg_a((data as i8).wrapping_neg() as u8);
     }
 
     fn and(&mut self, mode: &AddressingMode) {
@@ -573,7 +592,7 @@ impl CPU {
             let program_counter_state = self.pc;
 
             let opcode = opcodes.get(&code).unwrap();
-            println!("{:#?}", opcode);
+            //println!("{:#?}", opcode);
             match code {
                 // ADC
                 0x69 | 0x65 | 0x75 | 0x6D | 0x7D | 0x79 | 0x61 | 0x71 => {
@@ -849,7 +868,7 @@ mod tests {
     #[test]
     fn test_0xaa_tax() {
         let mut cpu = CPU::new();
-        cpu.pc = 0x8000;
+        //cpu.pc = 0x8000;
         cpu.register_a = 10; // Manual register
         cpu.load(vec![0xaa, 0x00]);
         cpu.run(); // TAX; BRK
@@ -859,7 +878,7 @@ mod tests {
     #[test]
     fn test_0xe8_inx() {
         let mut cpu = CPU::new();
-        cpu.pc = 0x8000;
+        //.pc = 0x8000;
         cpu.register_x = 10;
         cpu.load(vec![0xe8, 0x00]);
         cpu.run(); // INXX; BRK
@@ -877,7 +896,7 @@ mod tests {
     #[test]
     fn test_inx_overflow() {
         let mut cpu = CPU::new();
-        cpu.pc = 0x8000;
+        //cpu.pc = 0x8000;
         cpu.register_x = 0xff;
         cpu.load(vec![0xe8, 0xe8, 0x00]);
         cpu.run(); // INX; INX; Brk
@@ -899,7 +918,7 @@ mod tests {
 
         cpu.load(vec![0x69, 0x10, 0x00]);
         cpu.set_register_a(0x10);
-        cpu.pc = 0x8000;
+        //cpu.pc = 0x8000;
         cpu.run();
 
         assert_eq!(cpu.register_a, 0x20);
@@ -912,7 +931,7 @@ mod tests {
 
         cpu.load(vec![0x69, 0x1, 0x00]);
         cpu.set_register_a(0xff);
-        cpu.pc = 0x8000;
+        //cpu.pc = 0x8000;
         cpu.run();
 
         //assert_eq!(cpu.register_a, 0x20);
@@ -923,11 +942,12 @@ mod tests {
     fn test_0x65_adc() {
         let mut cpu = CPU::new();
 
-        cpu.load(vec![0x65, 0x1, 0x00]);
+        cpu.load(vec![0x65, 0x2, 0x00]);
+        cpu.mem_write(0x2, 0x10);
         cpu.set_register_a(0x1);
-        cpu.mem_write(0x1, 0x10);
-        cpu.pc = 0x8000;
+        // println!("{:x?}", cpu.bus.vram);
         cpu.run();
+        println!("{:x?}", cpu.bus.vram);
 
         assert_eq!(cpu.register_a, 0x11);
     }
@@ -940,7 +960,7 @@ mod tests {
         cpu.set_register_a(0x1);
         cpu.register_x = 0x1;
         cpu.mem_write(0x2, 0x10);
-        cpu.pc = 0x8000;
+        //cpu.pc = 0x8000;
         cpu.run();
 
         assert_eq!(cpu.register_a, 0x11);
@@ -953,7 +973,7 @@ mod tests {
         cpu.load(vec![0x6D, 0b1, 0b1, 0x00]); // Yields and accesses address 0b0000_0001_0000_0001
         cpu.set_register_a(0x1);
         cpu.mem_write(0b100000001, 0x10);
-        cpu.pc = 0x8000;
+        //cpu.pc = 0x8000;
         cpu.run();
 
         assert_eq!(cpu.register_a, 0x11);
@@ -967,7 +987,7 @@ mod tests {
         cpu.set_register_a(0x1);
         cpu.register_x = 0x1;
         cpu.mem_write(0b100000010, 0x10);
-        cpu.pc = 0x8000;
+        //cpu.pc = 0x8000;
         cpu.run();
 
         assert_eq!(cpu.register_a, 0x11);
@@ -982,7 +1002,7 @@ mod tests {
         cpu.set_register_a(0x1);
         cpu.register_y = 0x1;
         cpu.mem_write(0b100000010, 0x10);
-        cpu.pc = 0x8000;
+        // cpu.pc = 0x8000;
         cpu.run();
 
         assert_eq!(cpu.register_a, 0x11);
@@ -1000,7 +1020,7 @@ mod tests {
 
         cpu.load(vec![0xe9, 0x1, 0x00]);
         cpu.set_register_a(0x2);
-        cpu.pc = 0x8000;
+        // cpu.pc = 0x8000;
         cpu.run();
 
         assert_eq!(cpu.register_a, 0x1);
@@ -1012,7 +1032,7 @@ mod tests {
 
         cpu.load(vec![0x29, 0b1, 0x00]);
         cpu.set_register_a(0x3);
-        cpu.pc = 0x8000;
+        // cpu.pc = 0x8000;
         cpu.run();
 
         assert_eq!(cpu.register_a, 0x1);
@@ -1025,7 +1045,7 @@ mod tests {
 
         cpu.load(vec![0x0a, 0x00]);
         cpu.set_register_a(0x3);
-        cpu.pc = 0x8000;
+        // cpu.pc = 0x8000;
         cpu.run();
 
         assert_eq!(cpu.register_a, 0x6);
@@ -1036,12 +1056,12 @@ mod tests {
         // Immediate
         let mut cpu = CPU::new();
 
-        cpu.load(vec![0x06, 0x1, 0x00]);
-        cpu.mem_write(0x1, 0x3);
-        cpu.pc = 0x8000;
+        cpu.load(vec![0x06, 0x2, 0x00]);
+        cpu.mem_write(0x2, 0x3);
+        // cpu.pc = 0x8000;
         cpu.run();
 
-        assert_eq!(cpu.mem_read(0x1), 0x6);
+        assert_eq!(cpu.mem_read(0x2), 0x6);
     }
 
     #[test]
@@ -1051,7 +1071,7 @@ mod tests {
         cpu.load(vec![0x24, 0x1, 0x00]);
         cpu.mem_write(0x1, 0x3);
         cpu.register_a = 0b1000_0000;
-        cpu.pc = 0x8000;
+        // cpu.pc = 0x8000;
         cpu.run();
 
         assert!(cpu.status.contains(StatusFlags::ZERO));
