@@ -21,6 +21,7 @@ bitflags! {
     ///  | +--------------- Overflow Flag
     ///  +----------------- Negative Flag
 //
+    #[derive(Clone)]
     pub struct StatusFlags: u8 {
         const CARRY = 0b0000_0001;
         const ZERO = 0b0000_0010;
@@ -155,14 +156,6 @@ impl CPU {
         self.status.remove(StatusFlags::INTERRUPT_DISABLE)
     }
 
-    fn set_zero_flag(&mut self) {
-        self.status.insert(StatusFlags::ZERO)
-    }
-
-    fn clear_zero_flag(&mut self) {
-        self.status.remove(StatusFlags::ZERO)
-    }
-
     fn set_decimal_flag(&mut self) {
         self.status.insert(StatusFlags::DECIMAL_MODE);
     }
@@ -215,7 +208,7 @@ impl CPU {
             self.status.remove(StatusFlags::ZERO);
         }
 
-        if reg & 0b1000_0000 != 0 {
+        if reg >> 7 == 1 {
             self.status.insert(StatusFlags::NEGATIVE);
         } else {
             self.status.remove(StatusFlags::NEGATIVE);
@@ -250,8 +243,7 @@ impl CPU {
         let addr = self.get_operand_address(mode);
         let value = self.mem_read(addr);
 
-        self.register_a = value;
-        self.set_flags_zero_neg(self.register_a);
+        self.set_register_a(value);
     }
 
     fn tax(&mut self) {
@@ -308,14 +300,14 @@ impl CPU {
     fn sbc(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         let data = self.mem_read(addr);
-        self.add_to_reg_a((data as i8).wrapping_neg() as u8);
+        self.add_to_reg_a((data as i8).wrapping_neg().wrapping_sub(1) as u8);
     }
 
     fn and(&mut self, mode: &AddressingMode) {
         let addr = self.get_operand_address(mode);
         let data = self.mem_read(addr);
 
-        self.and_reg_a(data);
+        self.and_reg_a(data & self.register_a);
     }
 
     fn asl_accumulator(&mut self) {
@@ -344,8 +336,8 @@ impl CPU {
     }
 
     // Group all branch operations together, with a condition as argument
-    fn branch(&mut self, condition: bool, mode: &AddressingMode) {
-        let addr = self.get_operand_address(mode); // Obsolete, as branch is uni-mode
+    fn branch(&mut self, condition: bool, _mode: &AddressingMode) {
+        let addr = self.pc;
         if condition {
             let jump = self.mem_read(addr) as i8;
             let jump_addr = addr.wrapping_add(1).wrapping_add(jump as u16);
@@ -419,7 +411,7 @@ impl CPU {
     fn jsr(&mut self, _mode: &AddressingMode) {
         let target_addr = self.mem_read_u16(self.pc);
 
-        self.stack_push(self.sp + 2 - 1); // +2 for the 2-byte skip
+        self.stack_push_u16(self.pc + 2 - 1); // +2 for the 2-byte skip
         self.pc = target_addr;
     }
 
@@ -439,7 +431,7 @@ impl CPU {
         self.set_flags_zero_neg(self.register_y);
     }
 
-    fn lsr(&mut self, mode: &AddressingMode) {
+    fn lsr(&mut self, mode: &AddressingMode) -> u8 {
         let addr = self.get_operand_address(mode);
         let mut data = self.mem_read(addr);
 
@@ -451,6 +443,7 @@ impl CPU {
         data = data >> 1;
         self.mem_write(addr, data);
         self.set_flags_zero_neg(data);
+        data
     }
 
     fn lsr_accumulator(&mut self) {
@@ -489,7 +482,7 @@ impl CPU {
         self.set_register_a(data);
     }
 
-    fn rol(&mut self, mode: &AddressingMode) {
+    fn rol(&mut self, mode: &AddressingMode) -> u8 {
         let addr = self.get_operand_address(mode);
         let mut data = self.mem_read(addr);
         let old_carry = self.status.contains(StatusFlags::CARRY);
@@ -506,6 +499,16 @@ impl CPU {
         }
 
         self.mem_write(addr, data);
+        self.update_negative_flags(data);
+        data
+    }
+
+    fn update_negative_flags(&mut self, result: u8) {
+        if result >> 7 == 1 {
+            self.status.insert(StatusFlags::NEGATIVE)
+        } else {
+            self.status.remove(StatusFlags::NEGATIVE)
+        }
     }
 
     fn ror_accumulator(&mut self) {
@@ -526,7 +529,7 @@ impl CPU {
         self.set_register_a(data);
     }
 
-    fn ror(&mut self, mode: &AddressingMode) {
+    fn ror(&mut self, mode: &AddressingMode) -> u8 {
         let addr = self.get_operand_address(mode);
         let mut data = self.mem_read(addr);
         let old_carry = self.status.contains(StatusFlags::CARRY);
@@ -543,6 +546,8 @@ impl CPU {
         }
 
         self.set_register_a(data);
+        self.update_negative_flags(data);
+        data
     }
 
     fn rti(&mut self, _mode: &AddressingMode) {
@@ -567,9 +572,7 @@ impl CPU {
             self.pc += 1;
             let program_counter_state = self.pc;
 
-            let opcode = opcodes
-                .get(&code)
-                .expect(&format!("Opcode {:x} is not recognized", code));
+            let opcode = opcodes.get(&code).unwrap();
             println!("{:#?}", opcode);
             match code {
                 // ADC
@@ -688,7 +691,9 @@ impl CPU {
                 // LSR (accumulator)
                 0x4a => self.lsr_accumulator(),
                 // LSR
-                0x46 | 0x56 | 0x4e | 0x5e => self.lsr(&opcode.mode),
+                0x46 | 0x56 | 0x4e | 0x5e => {
+                    self.lsr(&opcode.mode);
+                }
                 // NOP
                 0xea => {} // Do absolutely nothing
                 // ORA
@@ -696,7 +701,12 @@ impl CPU {
                 // PHA
                 0x48 => self.stack_push(self.register_a),
                 // PHP
-                0x08 => self.stack_push(self.status.bits()),
+                0x08 => {
+                    let mut flags = self.status.clone();
+                    flags.insert(StatusFlags::BREAK_COMMAND);
+                    self.stack_push(flags.bits());
+                }
+
                 // PLA
                 0x68 => {
                     let pulled = self.stack_pop();
@@ -711,11 +721,15 @@ impl CPU {
                 // ROL (accumulator)
                 0x2a => self.rol_accumulator(),
                 // ROL
-                0x26 | 0x36 | 0x2e | 0x3e => self.rol(&opcode.mode),
+                0x26 | 0x36 | 0x2e | 0x3e => {
+                    self.rol(&opcode.mode);
+                }
                 // ROR (accumulator)
                 0x6a => self.ror_accumulator(),
                 // ROR
-                0x66 | 0x76 | 0x6e | 0x7e => self.ror(&opcode.mode),
+                0x66 | 0x76 | 0x6e | 0x7e => {
+                    self.ror(&opcode.mode);
+                }
                 // RTI
                 0x40 => self.rti(&opcode.mode),
                 // RTS
@@ -749,6 +763,7 @@ impl CPU {
             if program_counter_state == self.pc {
                 self.pc += (opcode.pc_incr - 1) as u16;
             }
+
             callback(self);
         }
     }
