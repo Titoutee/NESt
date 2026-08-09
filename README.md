@@ -55,6 +55,7 @@ The NES components are wire together for internal communication using **3** buse
 - *address* bus carries the address of a required location
 - *control* bus notifies if it's a read or write access
 - *data* bus carries the byte of data being read or written
+
 ### Memory
 
 #### RAM
@@ -84,6 +85,22 @@ NESt has 6 CPU registers:
 - **Index Register Y** (Y) - similar use cases as register X.
 
 - **Processor status** (P) - 8-bit register represents 7 status flags that can be set or unset depending on the result of the last executed instruction (for example Z flag is set (1) if the result of an operation is 0, and is unset/erased (0) otherwise)
+
+### Mapping and virtual cartridges (ROMs)
+
+The iNES ROM dump format is built as follows:
+
+![iNES](iNES.png)
+
+and the header looks like this:
+
+![header](header.png)
+
+The emulator does not support the iNES 2.0 format as it's not very popular. Thus the bare minimum information we care about:
+- PRG ROM
+- CHR ROM
+- Mapper type
+- Mirroring type: Horizontal, Vertical, 4 Screen
 
 ## Machine language specification
 

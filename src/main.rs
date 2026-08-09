@@ -1,11 +1,10 @@
+use nest::mem::bus::Bus;
+use nest::mem::rom::Rom;
 use nest::{proc::CPU, proc::Mem};
 use rand::Rng;
 
-use nest::game::{GAME_CODE, input::*};
-use sdl2::EventPump;
-use sdl2::event::Event;
-use sdl2::keyboard::Keycode;
-use sdl2::pixels::Color;
+use nest::game::input::*;
+
 use sdl2::pixels::PixelFormatEnum;
 
 fn main() {
@@ -27,10 +26,13 @@ fn main() {
         .create_texture_target(PixelFormatEnum::RGB24, 32, 32)
         .unwrap();
 
-    //load the game
-    let mut cpu = CPU::new();
-    cpu.load(GAME_CODE.to_vec());
+    let bytes: Vec<u8> = std::fs::read("snake").unwrap();
+    let rom = Rom::new(&bytes).unwrap();
+    let bus = Bus::new(rom);
+    let mut cpu = CPU::new(bus);
     cpu.reset();
+
+    // create_fake_rom("snake".to_string());
 
     let mut screen_state = [0 as u8; 32 * 3 * 32];
     let mut rng = rand::thread_rng();

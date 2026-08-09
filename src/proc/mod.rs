@@ -1,10 +1,13 @@
 //! NESt processing
 
 pub mod addressing;
-mod bus;
+use super::mem::bus;
 pub mod op;
 
-use crate::proc::{bus::Bus, op::OpCode};
+use crate::{
+    mem::rom::Rom,
+    proc::{bus::Bus, op::OpCode},
+};
 use addressing::AddressingMode;
 use bitflags::bitflags;
 use std::collections::HashMap;
@@ -101,7 +104,7 @@ impl Mem for CPU {
 }
 
 impl CPU {
-    pub fn new() -> Self {
+    pub fn new(bus: Bus) -> Self {
         // Init state uses all NULL values
         // WARNING: 0 as default PC value does not correspond to what NES considers the base PC when the machine initializes
         // Please refer to the docs given in README for more info
@@ -110,21 +113,35 @@ impl CPU {
             register_x: 0,
             register_y: 0,
             status: StatusFlags::from_bits_truncate(0b100100),
-            pc: 0,
+            pc: 0x8000,
             sp: STACK_RESET,
-            bus: Bus::new(),
+            bus,
+        }
+    }
+
+    pub fn new_empty() -> Self {
+        CPU {
+            register_a: 0,
+            register_x: 0,
+            register_y: 0,
+            status: StatusFlags::from_bits_truncate(0b100100),
+            pc: 0x8000,
+            sp: STACK_RESET,
+            bus: Bus::new(Rom {
+                mirroring: crate::mem::rom::Mirroring::Horizontal,
+                mapper: 0,
+                prg_rom: vec![0; 16 * 1024],
+                chr_rom: vec![0; 8 * 1024],
+            }),
         }
     }
 
     pub fn load(&mut self, program: Vec<u8>) {
         // self.mem[0x0600..(0x0600 + program.len())].copy_from_slice(&program[..]); // Tests will fail with 0x0600, for sure...
         for i in 0..(program.len() as u16) {
-            self.mem_write(0x0000 + i, program[i as usize]);
+            self.mem_write(0x8600 + i, program[i as usize]);
         }
-
-        //self.mem_write_u16(0xFFFC, 0x0600);
-        self.mem_write_u16(0xFFFC, 0x0000);
-        // println!("{:x}", self.mem_read_u16(0xFFFC));
+        self.mem_write_u16(0xFFFC, 0x8600);
     }
 
     // As when the cartridge is physically inserted
@@ -839,253 +856,298 @@ impl CPU {
 
 #[cfg(test)]
 mod tests {
+    use crate::mem::rom::test;
+
     use super::*;
 
     #[test]
     fn test_0xa9_lda_immediate_load_data() {
-        let mut cpu = CPU::new();
-        cpu.load_and_run(vec![0xa9, 0x05, 0x00]);
+        let bus = Bus::new(test::test_rom(vec![0xa9, 0x05, 0x00]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
         assert_eq!(cpu.register_a, 0x05);
         assert!(cpu.status.bits() & 0b0000_0010 == 0);
         assert!(cpu.status.bits() & 0b1000_0000 == 0);
     }
 
     #[test]
-    fn test_0xa9_lda_zero_flag() {
-        let mut cpu = CPU::new();
-        cpu.load_and_run(vec![0xa9, 0x00, 0x00]);
-        assert!(cpu.status.bits() & 0b0000_0001 == 0);
-    }
-
-    #[test]
-    fn test_0xa9_lda_neg_flag() {
-        let mut cpu = CPU::new();
-        cpu.load_and_run(vec![0xa9, 0b1000_0000, 0x00]);
-        // println!("{}", (cpu.status & 0b1000_0000) >> 7);
-        assert!((cpu.status.bits() & 0b1000_0000) >> 7 == 1);
-    }
-
-    #[test]
     fn test_0xaa_tax() {
-        let mut cpu = CPU::new();
-        //cpu.pc = 0x8000;
-        cpu.register_a = 10; // Manual register
-        cpu.load(vec![0xaa, 0x00]);
-        cpu.run(); // TAX; BRK
-        assert_eq!(cpu.register_x, cpu.register_a); // 10
+        let bus = Bus::new(test::test_rom(vec![0xa9, 0x05, 0xaa, 0x00]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert_eq!(cpu.register_x, 0x05);
+    }
+
+    #[test]
+    fn test_0xa8_tay() {
+        let bus = Bus::new(test::test_rom(vec![0xa9, 0x05, 0xa8, 0x00]));
+        let mut cpu = CPU::new(bus);
+
+        cpu.run();
+        assert_eq!(cpu.register_y, 0x05);
+    }
+
+    #[test]
+    fn test_0x8a_txa() {
+        let bus = Bus::new(test::test_rom(vec![0xa2, 0x05, 0x8a, 0x00]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert_eq!(cpu.register_a, 0x05);
+    }
+
+    #[test]
+    fn test_0x98_tya() {
+        let bus = Bus::new(test::test_rom(vec![0xa0, 0x05, 0x98, 0x00]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert_eq!(cpu.register_a, 0x05);
     }
 
     #[test]
     fn test_0xe8_inx() {
-        let mut cpu = CPU::new();
-        //.pc = 0x8000;
-        cpu.register_x = 10;
-        cpu.load(vec![0xe8, 0x00]);
-        cpu.run(); // INXX; BRK
-
-        assert_eq!(cpu.register_x, 11);
-    }
-
-    #[test]
-    fn test_ops_working_together() {
-        let mut cpu = CPU::new();
-        cpu.load_and_run(vec![0xa9, 0xc0, 0xaa, 0xe8, 0x00]);
-        assert_eq!(cpu.register_x, 0xc1)
-    }
-
-    #[test]
-    fn test_inx_overflow() {
-        let mut cpu = CPU::new();
-        //cpu.pc = 0x8000;
-        cpu.register_x = 0xff;
-        cpu.load(vec![0xe8, 0xe8, 0x00]);
-        cpu.run(); // INX; INX; Brk
-        assert_eq!(cpu.register_x, 1);
-    }
-
-    #[test]
-    fn test_lda_from_memory() {
-        let mut cpu = CPU::new();
-        cpu.mem_write(0x10, 0x55); // manual mem write
-        cpu.load_and_run(vec![0xa5, 0x10, 0x00]);
-
-        assert_eq!(cpu.register_a, 0x55);
-    }
-
-    #[test]
-    fn test_0x69_adc_no_carry() {
-        let mut cpu = CPU::new();
-
-        cpu.load(vec![0x69, 0x10, 0x00]);
-        cpu.set_register_a(0x10);
-        //cpu.pc = 0x8000;
+        let bus = Bus::new(test::test_rom(vec![0xa2, 0x05, 0xe8, 0x00]));
+        let mut cpu = CPU::new(bus);
         cpu.run();
-
-        assert_eq!(cpu.register_a, 0x20);
-        assert!(!cpu.status.contains(StatusFlags::CARRY));
+        assert_eq!(cpu.register_x, 0x06);
     }
 
     #[test]
-    fn test_0x69_adc_carry() {
-        let mut cpu = CPU::new();
-
-        cpu.load(vec![0x69, 0x1, 0x00]);
-        cpu.set_register_a(0xff);
-        //cpu.pc = 0x8000;
+    fn test_0xc8_iny() {
+        let bus = Bus::new(test::test_rom(vec![0xa0, 0x05, 0xc8, 0x00]));
+        let mut cpu = CPU::new(bus);
         cpu.run();
+        assert_eq!(cpu.register_y, 0x06);
+    }
 
-        //assert_eq!(cpu.register_a, 0x20);
+    #[test]
+    fn test_0xca_dex() {
+        let bus = Bus::new(test::test_rom(vec![0xa2, 0x05, 0xca, 0x00]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert_eq!(cpu.register_x, 0x04);
+    }
+
+    #[test]
+    fn test_0x88_dey() {
+        let bus = Bus::new(test::test_rom(vec![0xa0, 0x05, 0x88, 0x00]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert_eq!(cpu.register_y, 0x04);
+    }
+
+    #[test]
+    fn test_0x0a_asl_accumulator() {
+        let bus = Bus::new(test::test_rom(vec![0xa9, 0x05, 0x0a, 0x00]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert_eq!(cpu.register_a, 0x0a);
+    }
+
+    #[test]
+    fn test_0x4a_lsr_accumulator() {
+        let bus = Bus::new(test::test_rom(vec![0xa9, 0x0a, 0x4a, 0x00]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert_eq!(cpu.register_a, 0x05);
+    }
+
+    #[test]
+    fn test_0x2a_rol_accumulator() {
+        let bus = Bus::new(test::test_rom(vec![0xa9, 0x80, 0x2a, 0x00]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert_eq!(cpu.register_a, 0x00);
         assert!(cpu.status.contains(StatusFlags::CARRY));
     }
 
     #[test]
-    fn test_0x65_adc() {
-        let mut cpu = CPU::new();
-
-        cpu.load(vec![0x65, 0x2, 0x00]);
-        cpu.mem_write(0x2, 0x10);
-        cpu.set_register_a(0x1);
-        // println!("{:x?}", cpu.bus.vram);
+    fn test_0x29_and_immediate() {
+        let bus = Bus::new(test::test_rom(vec![0xa9, 0x0f, 0x29, 0x03, 0x00]));
+        let mut cpu = CPU::new(bus);
         cpu.run();
-        println!("{:x?}", cpu.bus.vram);
-
-        assert_eq!(cpu.register_a, 0x11);
+        assert_eq!(cpu.register_a, 0x03);
     }
 
     #[test]
-    fn test_0x75_adc() {
-        let mut cpu = CPU::new();
+    fn test_0x09_ora_immediate() {
+        let bus = Bus::new(test::test_rom(vec![0xa9, 0x0f, 0x09, 0x30, 0x00]));
+        let mut cpu = CPU::new(bus);
 
-        cpu.load(vec![0x75, 0x1, 0x00]);
-        cpu.set_register_a(0x1);
-        cpu.register_x = 0x1;
-        cpu.mem_write(0x2, 0x10);
-        //cpu.pc = 0x8000;
         cpu.run();
-
-        assert_eq!(cpu.register_a, 0x11);
+        assert_eq!(cpu.register_a, 0x3f);
     }
 
     #[test]
-    fn test_0x6d_adc() {
-        let mut cpu = CPU::new();
-
-        cpu.load(vec![0x6D, 0b1, 0b1, 0x00]); // Yields and accesses address 0b0000_0001_0000_0001
-        cpu.set_register_a(0x1);
-        cpu.mem_write(0b100000001, 0x10);
-        //cpu.pc = 0x8000;
+    fn test_0x49_eor_immediate() {
+        let bus = Bus::new(test::test_rom(vec![0xa9, 0x0f, 0x49, 0x03, 0x00]));
+        let mut cpu = CPU::new(bus);
         cpu.run();
-
-        assert_eq!(cpu.register_a, 0x11);
+        assert_eq!(cpu.register_a, 0x0c);
     }
 
     #[test]
-    fn test_0x7d_adc() {
-        let mut cpu = CPU::new();
+    fn test_0x69_adc_immediate() {
+        let bus = Bus::new(test::test_rom(vec![0xa9, 0x05, 0x69, 0x03, 0x00]));
+        let mut cpu = CPU::new(bus);
 
-        cpu.load(vec![0x7D, 0b1, 0b1, 0x00]);
-        cpu.set_register_a(0x1);
-        cpu.register_x = 0x1;
-        cpu.mem_write(0b100000010, 0x10);
-        //cpu.pc = 0x8000;
         cpu.run();
-
-        assert_eq!(cpu.register_a, 0x11);
+        assert_eq!(cpu.register_a, 0x08);
     }
 
     #[test]
-    fn test_0x79_adc() {
-        // Same but with register Y
-        let mut cpu = CPU::new();
-
-        cpu.load(vec![0x79, 0b1, 0b1, 0x00]);
-        cpu.set_register_a(0x1);
-        cpu.register_y = 0x1;
-        cpu.mem_write(0b100000010, 0x10);
-        // cpu.pc = 0x8000;
+    fn test_0xc9_cmp_immediate() {
+        let bus = Bus::new(test::test_rom(vec![0xa9, 0x05, 0xc9, 0x05, 0x00]));
+        let mut cpu = CPU::new(bus);
         cpu.run();
-
-        assert_eq!(cpu.register_a, 0x11);
-    }
-
-    // TODO: test Indirect indexed + Indexed indexed
-
-    // From this point on, every addressing operand is tested and so we can just test the instruction itself,
-    // without diverging on the different addressing modes
-
-    // From now on, only immediate versions, when accessible, will be tested
-    #[test]
-    fn test_0xe9_sbc() {
-        let mut cpu = CPU::new();
-
-        cpu.load(vec![0xe9, 0x1, 0x00]);
-        cpu.set_register_a(0x2);
-        // cpu.pc = 0x8000;
-        cpu.run();
-
-        assert_eq!(cpu.register_a, 0x1);
-    }
-
-    #[test]
-    fn test_0x29_and() {
-        let mut cpu = CPU::new();
-
-        cpu.load(vec![0x29, 0b1, 0x00]);
-        cpu.set_register_a(0x3);
-        // cpu.pc = 0x8000;
-        cpu.run();
-
-        assert_eq!(cpu.register_a, 0x1);
-    }
-
-    #[test]
-    fn test_0x0a_asl() {
-        // Accumulator
-        let mut cpu = CPU::new();
-
-        cpu.load(vec![0x0a, 0x00]);
-        cpu.set_register_a(0x3);
-        // cpu.pc = 0x8000;
-        cpu.run();
-
-        assert_eq!(cpu.register_a, 0x6);
-    }
-
-    #[test]
-    fn test_0x06_asl() {
-        // Immediate
-        let mut cpu = CPU::new();
-
-        cpu.load(vec![0x06, 0x2, 0x00]);
-        cpu.mem_write(0x2, 0x3);
-        // cpu.pc = 0x8000;
-        cpu.run();
-
-        assert_eq!(cpu.mem_read(0x2), 0x6);
-    }
-
-    #[test]
-    fn test_0x24_bit() {
-        let mut cpu = CPU::new();
-
-        cpu.load(vec![0x24, 0x1, 0x00]);
-        cpu.mem_write(0x1, 0x3);
-        cpu.register_a = 0b1000_0000;
-        // cpu.pc = 0x8000;
-        cpu.run();
-
+        assert!(cpu.status.contains(StatusFlags::CARRY));
         assert!(cpu.status.contains(StatusFlags::ZERO));
+    }
+
+    #[test]
+    fn test_0xe0_cpx_immediate() {
+        let bus = Bus::new(test::test_rom(vec![0xa2, 0x05, 0xe0, 0x05, 0x00]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert!(cpu.status.contains(StatusFlags::CARRY));
+        assert!(cpu.status.contains(StatusFlags::ZERO));
+    }
+
+    #[test]
+    fn test_0xc0_cpy_immediate() {
+        let bus = Bus::new(test::test_rom(vec![0xa0, 0x05, 0xc0, 0x05, 0x00]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert!(cpu.status.contains(StatusFlags::CARRY));
+        assert!(cpu.status.contains(StatusFlags::ZERO));
+    }
+
+    #[test]
+    fn test_0x18_clc() {
+        let bus = Bus::new(test::test_rom(vec![0x38, 0x18, 0x00]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
         assert!(!cpu.status.contains(StatusFlags::CARRY));
+    }
+
+    #[test]
+    fn test_0x38_sec() {
+        let bus = Bus::new(test::test_rom(vec![0x38, 0x00]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert!(cpu.status.contains(StatusFlags::CARRY));
+    }
+
+    #[test]
+    fn test_0xd8_cld() {
+        let bus = Bus::new(test::test_rom(vec![0xf8, 0xd8, 0x00]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert!(!cpu.status.contains(StatusFlags::DECIMAL_MODE));
+    }
+
+    #[test]
+    fn test_0xf8_sed() {
+        let bus = Bus::new(test::test_rom(vec![0xf8, 0x00]));
+
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert!(cpu.status.contains(StatusFlags::DECIMAL_MODE));
+    }
+
+    #[test]
+    fn test_0x58_cli() {
+        let bus = Bus::new(test::test_rom(vec![0x58, 0x00]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert!(!cpu.status.contains(StatusFlags::INTERRUPT_DISABLE));
+    }
+
+    #[test]
+    fn test_0x78_sei() {
+        let bus = Bus::new(test::test_rom(vec![0x78, 0x00]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert!(cpu.status.contains(StatusFlags::INTERRUPT_DISABLE));
+    }
+
+    #[test]
+    fn test_0xb8_clv() {
+        let bus = Bus::new(test::test_rom(vec![0xb8, 0x00]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
         assert!(!cpu.status.contains(StatusFlags::OVERFLOW));
     }
 
     #[test]
-    fn test_stack_push_pop() {
-        let mut cpu = CPU::new();
+    fn test_0xea_nop() {
+        let bus = Bus::new(test::test_rom(vec![0xa9, 0x05, 0xea, 0x00]));
+        let mut cpu = CPU::new(bus);
 
-        cpu.stack_push(1);
-        let a = cpu.stack_pop();
+        cpu.run();
+        assert_eq!(cpu.register_a, 0x05);
+    }
 
-        assert!(a == 1);
+    #[test]
+    fn test_0x48_pha_0x68_pla() {
+        let bus = Bus::new(test::test_rom(vec![
+            0xa9, 0x05, 0x48, 0xa9, 0x00, 0x68, 0x00,
+        ]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert_eq!(cpu.register_a, 0x05);
+    }
+
+    #[test]
+    fn test_0x08_php_0x28_plp() {
+        let bus = Bus::new(test::test_rom(vec![0x38, 0x08, 0x18, 0x28, 0x00]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert!(cpu.status.contains(StatusFlags::CARRY));
+    }
+
+    #[test]
+    fn test_0xba_tsx() {
+        let bus = Bus::new(test::test_rom(vec![0xba, 0x00]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert_eq!(cpu.register_x, STACK_RESET);
+    }
+
+    #[test]
+    fn test_0x9a_txs() {
+        let bus = Bus::new(test::test_rom(vec![0xa2, 0x42, 0x9a, 0x00]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert_eq!(cpu.sp, 0x42);
+    }
+
+    #[test]
+    fn test_0x4c_jmp_absolute() {
+        let bus = Bus::new(test::test_rom(vec![
+            0x4c, 0x04, 0x80, 0x00, 0xa9, 0x05, 0x00,
+        ]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert_eq!(cpu.register_a, 0x05);
+    }
+
+    #[test]
+    fn test_0xd0_bne() {
+        let bus = Bus::new(test::test_rom(vec![
+            0xa9, 0x05, 0xd0, 0x02, 0x00, 0xa9, 0x00, 0x00,
+        ]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert_eq!(cpu.register_a, 0x05);
+    }
+
+    #[test]
+    fn test_0x10_bpl() {
+        let bus = Bus::new(test::test_rom(vec![
+            0xa9, 0x05, 0x10, 0x02, 0x00, 0xa9, 0x00, 0x00,
+        ]));
+        let mut cpu = CPU::new(bus);
+        cpu.run();
+        assert_eq!(cpu.register_a, 0x05);
     }
 }
