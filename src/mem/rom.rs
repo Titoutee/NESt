@@ -1,6 +1,6 @@
 const NES_TAG: [u8; 4] = [0x4e, 0x45, 0x53, 0x1a];
-const PRG_PAGE_SIZE: usize = 16 * 1024;
-const CHR_PAGE_SIZE: usize = 8 * 1024;
+const PRG_PAGE_SIZE: usize = 16384;
+const CHR_PAGE_SIZE: usize = 8192;
 
 #[derive(Debug, PartialEq)]
 pub enum Mirroring {

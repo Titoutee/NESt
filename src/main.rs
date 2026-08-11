@@ -1,9 +1,7 @@
 use nest::mem::bus::Bus;
 use nest::mem::rom::Rom;
-use nest::{proc::CPU, proc::Mem};
-use rand::Rng;
-
-use nest::game::input::*;
+use nest::proc::CPU;
+use nest::testing::trace::trace;
 
 use sdl2::pixels::PixelFormatEnum;
 
@@ -26,30 +24,49 @@ fn main() {
         .create_texture_target(PixelFormatEnum::RGB24, 32, 32)
         .unwrap();
 
-    let bytes: Vec<u8> = std::fs::read("snake").unwrap();
+    let bytes: Vec<u8> = std::fs::read("nestest.nes").unwrap();
     let rom = Rom::new(&bytes).unwrap();
+
     let bus = Bus::new(rom);
     let mut cpu = CPU::new(bus);
     cpu.reset();
+    cpu.program_counter = 0xC000;
 
     // create_fake_rom("snake".to_string());
 
     let mut screen_state = [0 as u8; 32 * 3 * 32];
-    let mut rng = rand::thread_rng();
+    // slet mut rng = rand::thread_rng();
 
     // run the game cycle
+    // cpu.run_with_callback(move |cpu| {
+    //    handle_user_input(cpu, &mut event_pump);
+
+    //    cpu.mem_write(0xfe, rng.gen_range(1, 16));
+    //   if read_screen_state(cpu, &mut screen_state) {
+    //        texture.update(None, &screen_state, 32 * 3).unwrap();
+    //
+    //       canvas.copy(&texture, None, None).unwrap();
+    //
+    //       canvas.present();
+    //   }
+
+    //   std::thread::sleep(std::time::Duration::new(0, 70_000));
+    //});
+
     cpu.run_with_callback(move |cpu| {
-        handle_user_input(cpu, &mut event_pump);
+        println!("{}", trace(cpu));
+        // handle_user_input(cpu, &mut event_pump);
 
-        cpu.mem_write(0xfe, rng.gen_range(1, 16));
-        if read_screen_state(cpu, &mut screen_state) {
-            texture.update(None, &screen_state, 32 * 3).unwrap();
+        // cpu.mem_write(0xfe, rng.gen_range(1, 16));
 
-            canvas.copy(&texture, None, None).unwrap();
+        // if read_screen_state(cpu, &mut screen_state) {
+        //     texture.update(None, &screen_state, 32 * 3).unwrap();
 
-            canvas.present();
-        }
+        //     canvas.copy(&texture, None, None).unwrap();
 
-        std::thread::sleep(std::time::Duration::new(0, 70_000));
+        //     canvas.present();
+        // }
+
+        // std::thread::sleep(std::time::Duration::new(0, 70_000));
     });
 }
