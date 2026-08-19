@@ -143,3 +143,9 @@ Undocumented opcodes are implemented as part of the emulator and are referenced 
 ## Tiling
 
 ![tiling](docs/image_5_16bytes_of_a_tile.png)
+
+### Algorithm for background rendering
+
+- Determine which nametable is being used for the current screen (by reading bit 0 and bit 1 from Control register)
+- Determine which CHR ROM bank is used for background tiles (by reading bit 4 from Control Register)
+- Read 960 bytes from the specified nametable and draw a 32x30 tile-based screen
