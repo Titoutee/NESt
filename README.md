@@ -40,13 +40,13 @@ NES implements typical **von Neumann architecture**: both *data* and the *instru
 
 Pieces of hardware share the whole frame while serving distinct goals, as this chart summarises:
 
-![Hardware responsibility](hierarchy.png)
+![Hardware responsibility](docs/hierarchy.png)
 
 ## CPU
 
 The CPU emulated follows the following hardware construction (memmap and registers):
 
-![CPU memmap and register](cpu_registers_memory.png)
+![CPU memmap and register](docs/cpu_registers_memory.png)
 
 ### Buses
 
@@ -55,6 +55,28 @@ The NES components are wire together for internal communication using **3** buse
 - *address* bus carries the address of a required location
 - *control* bus notifies if it's a read or write access
 - *data* bus carries the byte of data being read or written
+
+### PPU
+
+The NMI interrupt is tightly connected to PPU clock cycles:
+
+- the PPU renders 262 scan lines per frame
+- each scanline lasts for 341 PPU clock cycles
+- upon entering scanline 241, PPU triggers NMI interrupt
+- PPU clock cycles are 3 times faster than CPU clock cycles
+
+### Synchronisation
+
+NES platform being a distributed system as PPU clock cycles differ from CPU clock cycles (3 times faster), there is need for proper cycle synchronisation, and that is achieved with the "catch-up" method.
+
+The concept is as follows: Execute all components sequentially in one thread, but by letting CPU to execute one full instruction, compute the clock cycles budget for other components and let them run within the budget.
+
+### Interrupts
+- Finishes execution of the current instruction
+- Stores Program Counter and Status flag on the stack
+- Disables Interrupts by setting Disable Interrupt flag in the status register P
+- Loads the Address of Interrupt handler routine from 0xFFFA (for NMI)
+- Sets Program Counter register pointing to that address
 
 ### Memory
 
@@ -90,11 +112,11 @@ NESt has 6 CPU registers:
 
 The iNES ROM dump format is built as follows:
 
-![iNES](iNES.png)
+![iNES](docs/iNES.png)
 
 and the header looks like this:
 
-![header](header.png)
+![header](docs/header.png)
 
 The emulator does not support the iNES 2.0 format as it's not very popular. Thus the bare minimum information we care about:
 - PRG ROM
@@ -113,3 +135,11 @@ The NES CPU uses various addressing modes, which are documented [here](https://s
 ## 6502 JMP Indirect Bug
 
 You may notice that the original NES 6502 chip bug when operating a `JMP` with **indirect addressing** is reproduced with fidelity as part of the emulator. This is for *compatibility* and *authenticity* concerns only.
+
+## Undocumented opcodes
+
+Undocumented opcodes are implemented as part of the emulator and are referenced [here](https://www.nesdev.org/undocumented_opcodes.txt)
+
+## Tiling
+
+![tiling](docs/image_5_16bytes_of_a_tile.png)
